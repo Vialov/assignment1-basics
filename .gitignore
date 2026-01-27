@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# data files
+data/
+
 # Distribution / packaging
 .Python
 build/
@@ -161,3 +164,5 @@ cython_debug/
 
 .ruff_cache/
 *.zip
+
+.idea
