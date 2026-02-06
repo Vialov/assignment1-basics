@@ -188,6 +188,8 @@ class TokenizerTrainer:
         self.pair_occurrences: dict[int, list[int]] = defaultdict(list) # For each pair, the list of token indices where this pair occurs
         self.pair_heap: list[tuple[int, int, int]] = [] # Heap of pairs to consider for merging, as (negative count, version, pair_key)
 
+        self._touches: dict[int, int] = {}  # Temporary dict to track which pairs need to be updated after a merge, mapping token index to the last version it was touched
+
     def initial_count(self, num_chunks: int = 16, max_workers: int = 4) -> None:
         self.tokens = [bytes([i]) for i in range(256)]
 
@@ -240,3 +242,58 @@ class TokenizerTrainer:
         self.pair_versions = {pair_key: 0 for pair_key in self.pair_counts.keys()}
         self.pair_heap = [(-count, 0, pair_key) for pair_key, count in self.pair_counts.items()]
         heapq.heapify(self.pair_heap)
+
+    def merge_pair(self, pair_key: int) -> None:
+        self._touches = {}
+
+        token_A, token_B = unpack(pair_key)
+        new_token = self.tokens[token_A] + self.tokens[token_B]
+        new_token_ind = len(self.tokens)
+        self.tokens.append(new_token)
+
+        for index_A in self.pair_occurrences[pair_key]:
+            # Check if the pair is still valid (both tokens are alive and in the correct order)
+            if (not self.alive_tokens[index_A]) or (self.token_list[index_A] != token_A):
+                continue
+
+            index_B = self.next_token[index_A]
+            if index_B == -1 or self.token_list[index_B] != token_B or (not self.alive_tokens[index_B]):
+                continue
+
+            self.token_list[index_A] = new_token_ind
+            self.alive_tokens[index_B] = False
+            prev_index = self.prev_token[index_A]
+            next_index = self.next_token[index_B]
+            word_count = self.word_counts[self.token_to_word[index_A]]
+
+            if prev_index != -1:
+                prev_token = self.token_list[prev_index]
+                prev_pair_key = pk(prev_token, token_A)
+                self._touches[prev_pair_key] = self._touches.get(prev_pair_key, 0) - word_count
+
+                new_pair = pk(prev_token, new_token_ind)
+                self._touches[new_pair] = self._touches.get(new_pair, 0) + word_count
+                self.pair_occurrences[new_pair].append(prev_index)
+
+            self.next_token[index_A] = next_index
+            if next_index != -1:
+                next_token = self.token_list[next_index]
+                next_pair_key = pk(token_B, next_token)
+                self._touches[next_pair_key] = self._touches.get(next_pair_key, 0) - word_count
+
+                new_pair = pk(new_token_ind, next_token)
+                self._touches[new_pair] = self._touches.get(new_pair, 0) + word_count
+                self.pair_occurrences[new_pair].append(index_A)
+                self.prev_token[next_index] = index_A
+
+        self.merges.append((self.tokens[token_A], self.tokens[token_B]))
+        self.pair_counts[pair_key] = 0
+        self.pair_versions[pair_key] += 1
+        self.pair_occurrences[pair_key] = []
+
+        for touched_pair_key, delta in self._touches.items():
+            if delta == 0:
+                continue
+            self.pair_counts[touched_pair_key] = self.pair_counts.get(touched_pair_key, 0) + delta
+            self.pair_versions[touched_pair_key] = self.pair_versions.get(touched_pair_key, 0) + 1
+            heapq.heappush(self.pair_heap, (-self.pair_counts[touched_pair_key], self.pair_versions[touched_pair_key], touched_pair_key))
