@@ -2,6 +2,8 @@ import os
 from functools import lru_cache
 from concurrent.futures import ProcessPoolExecutor
 from typing import BinaryIO
+from collections import defaultdict
+import heapq
 
 import regex
 
@@ -142,3 +144,99 @@ def count_pred_tokens_parallel(
                 global_counts[token] = global_counts.get(token, 0) + count
 
     return global_counts
+
+
+def pk(a: int, b: int) -> int:
+    return (a << 32) | b
+
+
+def unpack(k: int) -> tuple[int,int]:
+    return (k >> 32), (k & 0xFFFFFFFF)
+
+
+class TokenizerTrainer:
+    def __init__(
+            self,
+            file_path: str,
+            dict_size: int,
+            split_special_token: str,
+            special_tokens: list[str] | None = None
+    ):
+        self.file_path = file_path
+        self.special_tokens = special_tokens
+        self.split_special_token = split_special_token
+        self.dict_size = dict_size
+
+        self.merges: list[tuple[bytes, bytes]] = [] # List of merges performed, in order (using token bytes)
+
+        self.tokens: list[bytes] = []
+
+        self.words: list[bytes] = []
+        self.word_counts: list[int] = [] # Count of each word (using word indices)
+        self.word_heads: list[int] = []
+
+        # Token positions and mappings
+        self.token_list: list[int] = []  # List of token occurrences
+        self.alive_tokens: list[bool] = [] # Whether each token is still alive (not merged)
+        self.next_token: list[int] = []
+        self.prev_token: list[int] = []
+        self.next_token: list[int] = []
+        self.token_to_word: list[int] = [] # Maps each token to the index of the word it belongs to
+
+        self.pair_counts: dict[int, int] = {} # Counts of each token pair (using token indices)
+        self.pair_versions: dict[int, int] = {} # For each pair, the version of the tokens when the pair was last updated
+        self.pair_occurrences: dict[int, list[int]] = defaultdict(list) # For each pair, the list of token indices where this pair occurs
+        self.pair_heap: list[tuple[int, int, int]] = [] # Heap of pairs to consider for merging, as (negative count, version, pair_key)
+
+    def initial_count(self, num_chunks: int = 16, max_workers: int = 4) -> None:
+        self.tokens = [bytes([i]) for i in range(256)]
+
+        # Step 1: Split the file into words and count occurrences
+        with open(self.file_path, "rb") as file:
+            boundaries = find_chunk_boundaries(
+                file,
+                desired_num_chunks=num_chunks,
+                split_special_token=self.split_special_token.encode("utf-8"),
+            )
+
+        print(f"Found {len(boundaries)} chunks.")
+        max_chunks = min(num_chunks, max(len(boundaries) - 1, 0))
+        selected_boundaries = boundaries[: max_chunks + 1]
+
+        global_counts = count_pred_tokens_parallel(
+            self.file_path,
+            selected_boundaries,
+            max_workers=max_workers,
+            special_tokens=self.special_tokens,
+        )
+
+        # Step 2: Build initial word list and token list
+        for word, count in global_counts.items():
+            word_ind = len(self.words)
+            self.words.append(word)
+            self.word_counts.append(count)
+            self.word_heads.append(len(self.token_list))
+
+            prev_token = -1
+            for token in word:
+                token_ind = len(self.token_list)
+                self.token_list.append(token)
+                self.alive_tokens.append(True)
+                self.token_to_word.append(word_ind)
+
+                if prev_token != -1:
+                    self.next_token.append(token_ind)
+                    pair_key = pk(prev_token, token)
+                    self.pair_counts[pair_key] = self.pair_counts.get(pair_key, 0) + count
+                    self.pair_occurrences[pair_key].append(token_ind-1) # Store the index of the first token in the pair
+                    self.prev_token.append(token_ind - 1)
+                else:
+                    self.prev_token.append(-1) # No previous token for the first token in the word
+
+                prev_token = token
+
+            self.next_token.append(-1) # End of word
+
+        self.pair_versions = {pair_key: 0 for pair_key in self.pair_counts.keys()}
+        self.pair_heap = [(-count, 0, pair_key) for pair_key, count in self.pair_counts.items()]
+        heapq.heapify(self.pair_heap)
