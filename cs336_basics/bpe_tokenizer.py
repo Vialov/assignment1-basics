@@ -297,3 +297,18 @@ class TokenizerTrainer:
             self.pair_counts[touched_pair_key] = self.pair_counts.get(touched_pair_key, 0) + delta
             self.pair_versions[touched_pair_key] = self.pair_versions.get(touched_pair_key, 0) + 1
             heapq.heappush(self.pair_heap, (-self.pair_counts[touched_pair_key], self.pair_versions[touched_pair_key], touched_pair_key))
+
+    def train(self) -> None:
+        while len(self.tokens) + len(self.special_tokens) < self.dict_size and self.pair_heap:
+            neg_count, version, pair_key = heapq.heappop(self.pair_heap)
+            actual_version = self.pair_versions[pair_key]
+            actual_count = self.pair_counts[pair_key]
+            if actual_count <= 0:
+                break
+
+            if version != actual_version or actual_count != -neg_count:
+                continue
+            self.merge_pair(pair_key)
+
+        special_tokens = [token.encode("utf-8") for token in self.special_tokens]
+        self.tokens.extend(special_tokens)
