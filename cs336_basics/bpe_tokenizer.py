@@ -338,6 +338,7 @@ class TokenizerTrainer:
             )
 
     def train(self) -> None:
+        merge_count = 0
         while len(self.tokens) + len(self.special_tokens) < self.dict_size and self.pair_heap:
             neg_count, _, version, pair_key = heapq.heappop(self.pair_heap)
             actual_version = self.pair_versions[pair_key]
@@ -347,6 +348,8 @@ class TokenizerTrainer:
 
             if version != actual_version or actual_count != -neg_count:
                 continue
+            merge_count += 1
+            print(f"{merge_count}: merging pair {self._pair_order(pair_key).left} + {self._pair_order(pair_key).right} with count {actual_count}")
             self.merge_pair(pair_key)
 
         special_tokens = [token.encode("utf-8") for token in self.special_tokens]
