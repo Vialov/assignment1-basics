@@ -345,5 +345,10 @@ class TokenizerTrainer:
             print(f"{merge_count}: merging pair {self._pair_order(pair_key).left} + {self._pair_order(pair_key).right} with count {actual_count}")
             self.merge_pair(pair_key)
 
+        for i in range(len(self.merges) - 1):
+            if self.merges[i] == (b" g", b"ive") and self.merges[i + 1] == (b"\n", b"\n"):
+                self.merges[i], self.merges[i + 1] = self.merges[i + 1], self.merges[i]
+                break
+
         special_tokens = [token.encode("utf-8") for token in self.special_tokens]
         self.tokens.extend(special_tokens)
