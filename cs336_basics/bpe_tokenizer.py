@@ -154,6 +154,25 @@ def unpack(k: int) -> tuple[int,int]:
     return (k >> 32), (k & 0xFFFFFFFF)
 
 
+class PairOrder:
+    __slots__ = ("left", "right")
+
+    def __init__(self, left: bytes, right: bytes) -> None:
+        self.left = left
+        self.right = right
+
+    def __lt__(self, other: "PairOrder") -> bool:
+        if not isinstance(other, PairOrder):
+            return NotImplemented
+        # Reverse lexicographic order so lexicographically greater pairs win ties.
+        return (self.left, self.right) > (other.left, other.right)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PairOrder):
+            return False
+        return (self.left, self.right) == (other.left, other.right)
+
+
 class TokenizerTrainer:
     def __init__(
             self,
@@ -186,9 +205,13 @@ class TokenizerTrainer:
         self.pair_counts: dict[int, int] = {} # Counts of each token pair (using token indices)
         self.pair_versions: dict[int, int] = {} # For each pair, the version of the tokens when the pair was last updated
         self.pair_occurrences: dict[int, list[int]] = defaultdict(list) # For each pair, the list of token indices where this pair occurs
-        self.pair_heap: list[tuple[int, int, int]] = [] # Heap of pairs to consider for merging, as (negative count, version, pair_key)
+        self.pair_heap: list[tuple[int, PairOrder, int, int]] = [] # Heap of pairs to consider for merging, as (negative count, pair_order, version, pair_key)
 
         self._touches: dict[int, int] = {}  # Temporary dict to track which pairs need to be updated after a merge, mapping token index to the last version it was touched
+
+    def _pair_order(self, pair_key: int) -> PairOrder:
+        token_A, token_B = unpack(pair_key)
+        return PairOrder(self.tokens[token_A], self.tokens[token_B])
 
     def initial_count(self, num_chunks: int = 16, max_workers: int = 4) -> None:
         self.tokens = [bytes([i]) for i in range(256)]
@@ -240,7 +263,7 @@ class TokenizerTrainer:
             self.next_token.append(-1) # End of word
 
         self.pair_versions = {pair_key: 0 for pair_key in self.pair_counts.keys()}
-        self.pair_heap = [(-count, 0, pair_key) for pair_key, count in self.pair_counts.items()]
+        self.pair_heap = [(-count, self._pair_order(pair_key), 0, pair_key) for pair_key, count in self.pair_counts.items()]
         heapq.heapify(self.pair_heap)
 
     def merge_pair(self, pair_key: int) -> None:
@@ -296,15 +319,23 @@ class TokenizerTrainer:
                 continue
             self.pair_counts[touched_pair_key] = self.pair_counts.get(touched_pair_key, 0) + delta
             self.pair_versions[touched_pair_key] = self.pair_versions.get(touched_pair_key, 0) + 1
-            heapq.heappush(self.pair_heap, (-self.pair_counts[touched_pair_key], self.pair_versions[touched_pair_key], touched_pair_key))
+            heapq.heappush(
+                self.pair_heap,
+                (
+                    -self.pair_counts[touched_pair_key],
+                    self._pair_order(touched_pair_key),
+                    self.pair_versions[touched_pair_key],
+                    touched_pair_key,
+                ),
+            )
 
     def train(self) -> None:
         while len(self.tokens) + len(self.special_tokens) < self.dict_size and self.pair_heap:
-            neg_count, version, pair_key = heapq.heappop(self.pair_heap)
+            neg_count, _, version, pair_key = heapq.heappop(self.pair_heap)
             actual_version = self.pair_versions[pair_key]
             actual_count = self.pair_counts[pair_key]
             if actual_count <= 0:
-                break
+                continue
 
             if version != actual_version or actual_count != -neg_count:
                 continue
