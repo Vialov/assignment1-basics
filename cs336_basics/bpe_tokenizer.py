@@ -218,20 +218,26 @@ class TokenizerTrainer:
         token_A, token_B = unpack(pair_key)
         return PairOrder(self.tokens[token_A], self.tokens[token_B])
 
-    def initial_count(self, num_chunks: int = 16, max_workers: int = 4) -> None:
+    def initial_count(self, num_chunks: int = 1, max_workers: int = 1) -> None:
         self.tokens = [bytes([i]) for i in range(256)]
 
         # Step 1: Split the file into words and count occurrences
         with open(self.file_path, "rb") as file:
-            file.seek(0, os.SEEK_END)
-            file_size = file.tell()
-            file.seek(0)
-            global_counts = split_pred_tokens(
+            boundaries = find_chunk_boundaries(
                 file,
-                0,
-                file_size,
-                special_tokens=self.special_tokens,
+                desired_num_chunks=num_chunks,
+                split_special_token=self.split_special_token.encode("utf-8"),
             )
+
+        max_chunks = min(num_chunks, max(len(boundaries) - 1, 0))
+        selected_boundaries = boundaries[: max_chunks + 1]
+
+        global_counts = count_pred_tokens_parallel(
+            self.file_path,
+            selected_boundaries,
+            max_workers=max_workers,
+            special_tokens=self.special_tokens,
+        )
 
         # Step 2: Build initial word list and token list
         for word, count in global_counts.items():
