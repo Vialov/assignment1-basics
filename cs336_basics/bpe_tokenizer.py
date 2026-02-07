@@ -72,21 +72,21 @@ def split_pred_tokens(
     file.seek(start)
     chunk = file.read(end - start).decode("utf-8", errors="ignore")
     if pattern is None:
-        pattern = get_pred_token_pattern(special_tokens)
-    tokens = pattern.findall(chunk)
+        pattern = get_pred_token_pattern()
 
     counts: dict[bytes, int] = {}
-    special_token_bytes: set[bytes] = set()
     if special_tokens:
-        special_token_bytes = {
-            token.encode("utf-8") if isinstance(token, str) else token
-            for token in special_tokens
-        }
-    for token in tokens:
-        token_bytes = token.encode("utf-8")
-        if special_token_bytes and token_bytes in special_token_bytes:
-            continue
-        counts[token_bytes] = counts.get(token_bytes, 0) + 1
+        special_token_pattern = regex.compile(
+            "|".join(regex.escape(token) for token in sorted(set(special_tokens), key=lambda s: (-len(s), s)))
+        )
+        chunks = special_token_pattern.split(chunk)
+    else:
+        chunks = [chunk]
+
+    for segment in chunks:
+        for token in pattern.findall(segment):
+            token_bytes = token.encode("utf-8")
+            counts[token_bytes] = counts.get(token_bytes, 0) + 1
 
     return counts
 
@@ -110,16 +110,13 @@ def _compile_pred_token_pattern(special_tokens_key: tuple[str, ...]) -> regex.Pa
 _PRED_TOKEN_PATTERN = regex.compile(BASE_PRED_TOKEN_PATTERN)
 
 
-def get_pred_token_pattern(special_tokens: list[str] | None = None) -> regex.Pattern:
-    if not special_tokens:
-        return _PRED_TOKEN_PATTERN
-    normalized = [token.decode("utf-8") if isinstance(token, bytes) else token for token in special_tokens]
-    return _compile_pred_token_pattern(tuple(normalized))
+def get_pred_token_pattern() -> regex.Pattern:
+    return _PRED_TOKEN_PATTERN
 
 
 def init_pred_token_pattern(special_tokens: list[str] | None) -> None:
     global _PRED_TOKEN_PATTERN
-    _PRED_TOKEN_PATTERN = get_pred_token_pattern(special_tokens)
+    _PRED_TOKEN_PATTERN = get_pred_token_pattern()
 
 
 def _count_pred_token_chunk(args: tuple[str, int, int, list[str]]) -> dict[bytes, int]:
@@ -190,7 +187,7 @@ class TokenizerTrainer:
             special_tokens: list[str] | None = None
     ):
         self.file_path = file_path
-        self.special_tokens = special_tokens
+        self.special_tokens = special_tokens or []
         self.split_special_token = split_special_token
         self.dict_size = dict_size
 
@@ -221,7 +218,7 @@ class TokenizerTrainer:
         token_A, token_B = unpack(pair_key)
         return PairOrder(self.tokens[token_A], self.tokens[token_B])
 
-    def initial_count(self, num_chunks: int = 16, max_workers: int = 4) -> None:
+    def initial_count(self, num_chunks: int = 1, max_workers: int = 1) -> None:
         self.tokens = [bytes([i]) for i in range(256)]
 
         # Step 1: Split the file into words and count occurrences
@@ -232,7 +229,6 @@ class TokenizerTrainer:
                 split_special_token=self.split_special_token.encode("utf-8"),
             )
 
-        print(f"Found {len(boundaries)} chunks.")
         max_chunks = min(num_chunks, max(len(boundaries) - 1, 0))
         selected_boundaries = boundaries[: max_chunks + 1]
 
