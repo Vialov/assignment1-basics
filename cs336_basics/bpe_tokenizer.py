@@ -76,8 +76,16 @@ def split_pred_tokens(
     tokens = pattern.findall(chunk)
 
     counts: dict[bytes, int] = {}
+    special_token_bytes: set[bytes] = set()
+    if special_tokens:
+        special_token_bytes = {
+            token.encode("utf-8") if isinstance(token, str) else token
+            for token in special_tokens
+        }
     for token in tokens:
         token_bytes = token.encode("utf-8")
+        if special_token_bytes and token_bytes in special_token_bytes:
+            continue
         counts[token_bytes] = counts.get(token_bytes, 0) + 1
 
     return counts
@@ -114,10 +122,10 @@ def init_pred_token_pattern(special_tokens: list[str] | None) -> None:
     _PRED_TOKEN_PATTERN = get_pred_token_pattern(special_tokens)
 
 
-def _count_pred_token_chunk(args: tuple[str, int, int]) -> dict[bytes, int]:
-    file_path, start, end = args
+def _count_pred_token_chunk(args: tuple[str, int, int, list[str]]) -> dict[bytes, int]:
+    file_path, start, end, special_tokens = args
     with open(file_path, "rb") as file:
-        return split_pred_tokens(file, start, end, pattern=_PRED_TOKEN_PATTERN)
+        return split_pred_tokens(file, start, end, pattern=_PRED_TOKEN_PATTERN, special_tokens=special_tokens)
 
 
 def count_pred_tokens_parallel(
@@ -138,7 +146,7 @@ def count_pred_tokens_parallel(
     ) as executor:
         for counts in executor.map(
             _count_pred_token_chunk,
-            [(file_path, start, end) for start, end in chunk_ranges],
+            [(file_path, start, end, special_tokens) for start, end in chunk_ranges],
         ):
             for token, count in counts.items():
                 global_counts[token] = global_counts.get(token, 0) + count
