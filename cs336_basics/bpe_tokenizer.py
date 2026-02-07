@@ -190,7 +190,7 @@ class TokenizerTrainer:
             special_tokens: list[str] | None = None
     ):
         self.file_path = file_path
-        self.special_tokens = special_tokens
+        self.special_tokens = special_tokens or []
         self.split_special_token = split_special_token
         self.dict_size = dict_size
 
@@ -226,22 +226,15 @@ class TokenizerTrainer:
 
         # Step 1: Split the file into words and count occurrences
         with open(self.file_path, "rb") as file:
-            boundaries = find_chunk_boundaries(
+            file.seek(0, os.SEEK_END)
+            file_size = file.tell()
+            file.seek(0)
+            global_counts = split_pred_tokens(
                 file,
-                desired_num_chunks=num_chunks,
-                split_special_token=self.split_special_token.encode("utf-8"),
+                0,
+                file_size,
+                special_tokens=self.special_tokens,
             )
-
-        print(f"Found {len(boundaries)} chunks.")
-        max_chunks = min(num_chunks, max(len(boundaries) - 1, 0))
-        selected_boundaries = boundaries[: max_chunks + 1]
-
-        global_counts = count_pred_tokens_parallel(
-            self.file_path,
-            selected_boundaries,
-            max_workers=max_workers,
-            special_tokens=self.special_tokens,
-        )
 
         # Step 2: Build initial word list and token list
         for word, count in global_counts.items():
